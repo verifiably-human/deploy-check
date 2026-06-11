@@ -1,0 +1,32 @@
+[package]
+name = "deploy-check"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Bob Blessing-Hartley <bob.blessing-hartley@shielded.io>"]
+description = "Checks whether a compiled Midnight Compact contract fits under deploy limits for a given network"
+license = "Apache-2.0"
+repository = "https://github.com/verifiably-human/deploy-check"
+readme = "README.md"
+keywords = ["midnight", "compact", "deploy", "ledger", "zk"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Source-of-truth for limits and ContractDeploy serialization. Disabled
+# until the exact-via-tree_copy mode lands. Re-add (pinned to a specific
+# commit) when implementing src/exact.rs.
+# midnight-ledger-v9 = { git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "<commit>" }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
