@@ -90,6 +90,18 @@ fn json_mode_emits_machine_readable() {
 }
 
 #[test]
+#[cfg(not(feature = "exact"))]
+fn exact_flag_without_feature_errors_clearly() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    bin()
+        .arg(fixture.path())
+        .arg("--exact")
+        .assert()
+        .failure()
+        .stderr(contains("--exact requires the `exact` cargo feature"));
+}
+
+#[test]
 fn missing_keys_dir_errors_clearly() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("compiler")).unwrap();

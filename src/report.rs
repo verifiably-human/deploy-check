@@ -41,8 +41,13 @@ pub struct Totals {
     /// Sum of verifier-key file sizes. Lower bound on bytes_written.
     pub verifier_key_bytes_total: u64,
     /// Estimated bytes_written for the deploy, including tree pointer
-    /// overhead. See `report::estimate_bytes_written`.
+    /// overhead. See `report::estimate_bytes_written`. Always present.
     pub estimated_bytes_written: u64,
+    /// Exact `bytes_written` from `cost_model.tree_copy` over the real
+    /// `ContractState`. Present only when run with `--exact` (and the
+    /// binary was built with `--features exact`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_bytes_written: Option<u64>,
     /// Estimated serialized transaction size.
     pub estimated_tx_bytes: u64,
 }
@@ -82,11 +87,18 @@ impl Report {
             )?;
         }
         writeln!(out)?;
-        writeln!(
-            out,
-            "Totals: VK sum = {} bytes; estimated bytes_written = {} bytes",
-            self.totals.verifier_key_bytes_total, self.totals.estimated_bytes_written
-        )?;
+        match self.totals.exact_bytes_written {
+            Some(exact) => writeln!(
+                out,
+                "Totals: VK sum = {} bytes; exact bytes_written = {} bytes (estimator said {})",
+                self.totals.verifier_key_bytes_total, exact, self.totals.estimated_bytes_written
+            )?,
+            None => writeln!(
+                out,
+                "Totals: VK sum = {} bytes; estimated bytes_written = {} bytes (run with --exact for the real value)",
+                self.totals.verifier_key_bytes_total, self.totals.estimated_bytes_written
+            )?,
+        }
         writeln!(out)?;
         let pf = |c: &CheckResult| if c.fits { "PASS" } else { "FAIL" };
         writeln!(
@@ -138,7 +150,11 @@ const CONTRACT_STATE_OVERHEAD: u64 = 1024;
 /// zswap offers, signatures). Rough; refine.
 const TRANSACTION_OVERHEAD: u64 = 4096;
 
-pub fn evaluate(artifacts: &Artifacts, limits: &Limits) -> Report {
+pub fn evaluate(
+    artifacts: &Artifacts,
+    limits: &Limits,
+    exact_bytes_written: Option<u64>,
+) -> Report {
     let circuits: Vec<CircuitReport> = artifacts
         .circuits
         .iter()
@@ -159,9 +175,20 @@ pub fn evaluate(artifacts: &Artifacts, limits: &Limits) -> Report {
         .max()
         .unwrap_or(0);
 
+    // The block-bytes-written check uses the exact value when available;
+    // otherwise it falls back to the estimator. Headroom labels reflect
+    // which source produced the number.
+    let (bytes_written_used, bytes_written_source) = match exact_bytes_written {
+        Some(b) => (b, "exact bytes_written from cost_model.tree_copy"),
+        None => (
+            estimated_bytes_written,
+            "estimated bytes_written from VK sum + tree overhead",
+        ),
+    };
+
     let block_bytes_written = check(
-        "estimated bytes_written from VK sum + tree overhead",
-        estimated_bytes_written,
+        bytes_written_source,
+        bytes_written_used,
         limits.block_bytes_written,
     );
     let transaction_byte_limit = check(
@@ -182,6 +209,7 @@ pub fn evaluate(artifacts: &Artifacts, limits: &Limits) -> Report {
             circuit_count,
             verifier_key_bytes_total: vk_sum,
             estimated_bytes_written,
+            exact_bytes_written,
             estimated_tx_bytes,
         },
         checks: Checks {

@@ -14,6 +14,8 @@
 // limitations under the License.
 
 mod artifacts;
+#[cfg(feature = "exact")]
+mod exact;
 mod limits;
 mod report;
 
@@ -38,6 +40,12 @@ struct Cli {
     /// Output report as JSON instead of human-readable.
     #[arg(long)]
     json: bool,
+
+    /// Use exact `bytes_written` via midnight-ledger `cost_model.tree_copy`.
+    /// Requires the binary to be built with `--features exact`. Without
+    /// the feature, this flag returns an error explaining how to rebuild.
+    #[arg(long)]
+    exact: bool,
 }
 
 fn main() -> Result<()> {
@@ -52,7 +60,26 @@ fn main() -> Result<()> {
     let artifacts = artifacts::load(&cli.build_dir)
         .with_context(|| format!("reading build dir {}", cli.build_dir.display()))?;
 
-    let report = report::evaluate(&artifacts, &limits);
+    let exact_bytes_written = if cli.exact {
+        #[cfg(feature = "exact")]
+        {
+            Some(
+                exact::compute(&artifacts)
+                    .context("computing exact bytes_written via cost_model.tree_copy")?
+                    .bytes_written,
+            )
+        }
+        #[cfg(not(feature = "exact"))]
+        {
+            anyhow::bail!(
+                "--exact requires the `exact` cargo feature. Rebuild with:\n  cargo install --git https://github.com/verifiably-human/deploy-check --features exact\nor for a local checkout:\n  cargo build --release --features exact"
+            );
+        }
+    } else {
+        None
+    };
+
+    let report = report::evaluate(&artifacts, &limits, exact_bytes_written);
 
     if cli.json {
         serde_json::to_writer_pretty(std::io::stdout(), &report)?;

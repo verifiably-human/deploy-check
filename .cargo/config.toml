@@ -1,0 +1,8 @@
+# Use the system `git` binary for fetching git dependencies instead of
+# libgit2. libgit2's bundled TLS stack mis-handshakes against some hosts
+# and corporate proxies; system git is more robust to local TLS config.
+#
+# Applies only when building deploy-check (cargo respects this file under
+# the project root). Has no effect on users' global cargo settings.
+[net]
+git-fetch-with-cli = true

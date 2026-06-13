@@ -2,7 +2,7 @@
 name = "deploy-check"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.95"
 authors = ["Bob Blessing-Hartley <bob.blessing-hartley@shielded.io>"]
 description = "Checks whether a compiled Midnight Compact contract fits under deploy limits for a given network"
 license = "Apache-2.0"
@@ -11,16 +11,40 @@ readme = "README.md"
 keywords = ["midnight", "compact", "deploy", "ledger", "zk"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+# Default: lightweight estimator only. No midnight-ledger linkage.
+default = []
+# Exact mode: link the midnight-ledger workspace and use the real
+# cost_model.tree_copy() invocation. First build is heavy (multi-minute
+# cold-cache); subsequent builds reuse cargo's incremental cache.
+exact = [
+    "dep:midnight-ledger",
+    "dep:midnight-onchain-state",
+    "dep:midnight-onchain-vm",
+    "dep:midnight-transient-crypto",
+    "dep:midnight-serialize",
+    "dep:midnight-storage",
+    "dep:midnight-storage-core",
+    "dep:midnight-base-crypto",
+]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Source-of-truth for limits and ContractDeploy serialization. Disabled
-# until the exact-via-tree_copy mode lands. Re-add (pinned to a specific
-# commit) when implementing src/exact.rs.
-# midnight-ledger-v9 = { git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "<commit>" }
+# Midnight ledger workspace, pinned to ledger-8.1.0. All 8 crates resolve
+# from the same git revision, so cargo's dedupe keeps a single source.
+# Gated behind the `exact` feature so the default build stays light.
+midnight-ledger          = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-onchain-state   = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-onchain-vm      = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-serialize       = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-storage         = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-storage-core    = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+midnight-base-crypto     = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
