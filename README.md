@@ -126,22 +126,40 @@ Sums verifier-key file sizes and adds a constant for tree-pointer
 overhead. No ledger crate linkage. Build cost: a handful of crates,
 seconds.
 
-The constants (`PERSISTENT_HASH_BYTES`, `ENTRY_POINT_OVERHEAD`,
-`CONTRACT_STATE_OVERHEAD`, `TRANSACTION_OVERHEAD`) are sized to
-slightly overshoot real values so an estimator `PASS` implies an exact
-`PASS`. Verified against pattern1 (35% over) and
-pattern7-shielded-token (6% over).
+The estimator approximates `tree_copy` but does NOT model the
+`map_insert` cost of inserting the contract into the registry map.
+Run with `--exact` for the precise number; treat the estimator as a
+fast pre-flight check.
 
 ### Exact (`--features exact`)
 
 Links `midnight-ledger` workspace (ledger-8.1.0), constructs a real
-`ContractState` from the build dir's verifier keys, and calls
-`cost_model.tree_copy(Sp::new(state))`. The returned `bytes_written`
-is the exact value the ledger will charge against the block budget.
+`ContractState` from the build dir's verifier keys, and computes the
+same cost the ledger's deploy branch computes:
+
+```
+bytes_written = cost_model.map_insert(EXPECTED_CONTRACT_DEPTH, false).bytes_written
+              + cost_model.tree_copy(Sp::new(state)).bytes_written
+```
+
+Also serializes a real `ContractDeploy` via `tagged_serialize` so the
+transaction-byte-limit check uses the measured size, not an estimator
+constant.
 
 First build pulls ~50 crates and takes several minutes. Subsequent
-builds reuse cargo's incremental cache. Use this in CI gates, public
-release smoke tests, and any time the estimator's headroom is < ~5 KiB.
+builds reuse cargo's incremental cache. Use this in CI gates and
+release smoke tests.
+
+### Headroom warnings
+
+Even when a check passes, a `WARN` outcome fires when the headroom
+(`limit - used`) is below the threshold `max(5 KiB, 10% of limit)`.
+The contract fits today, but a small future addition could push it
+over. Exit code is still 0 on warn.
+
+```
+[WARN] block bytes_written:   47200 / 50000  (only 2800 headroom — fits today, may not survive growth)
+```
 
 ## Source of truth
 

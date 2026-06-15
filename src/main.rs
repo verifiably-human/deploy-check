@@ -60,14 +60,17 @@ fn main() -> Result<()> {
     let artifacts = artifacts::load(&cli.build_dir)
         .with_context(|| format!("reading build dir {}", cli.build_dir.display()))?;
 
-    let exact_bytes_written = if cli.exact {
+    let exact_sizes = if cli.exact {
         #[cfg(feature = "exact")]
         {
-            Some(
-                exact::compute(&artifacts)
-                    .context("computing exact bytes_written via cost_model.tree_copy")?
-                    .bytes_written,
-            )
+            let c = exact::compute(&artifacts)
+                .context("computing exact bytes_written via cost_model.tree_copy")?;
+            Some(report::ExactSizes {
+                bytes_written: c.bytes_written,
+                tree_copy_bytes_written: c.tree_copy_bytes_written,
+                map_insert_bytes_written: c.map_insert_bytes_written,
+                deploy_serialized_bytes: c.deploy_serialized_bytes,
+            })
         }
         #[cfg(not(feature = "exact"))]
         {
@@ -79,7 +82,7 @@ fn main() -> Result<()> {
         None
     };
 
-    let report = report::evaluate(&artifacts, &limits, exact_bytes_written);
+    let report = report::evaluate(&artifacts, &limits, exact_sizes);
 
     if cli.json {
         serde_json::to_writer_pretty(std::io::stdout(), &report)?;

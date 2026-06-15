@@ -6,6 +6,34 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Exact-mode completeness (see specs/SPEC-3-exact-mode-completeness.md)
+
+- **`map_insert` cost now included in exact mode.** The ledger's
+  deploy cost is `map_insert + tree_copy`; previously only `tree_copy`
+  was computed. Pattern7-shielded-token: exact bytes_written went from
+  12,175 → 16,303 (the missing 4,128 bytes is the registry insert).
+  `map_insert` is `pub(crate)` upstream, so the arithmetic is
+  replicated locally with a `SOURCE:` comment pointing at the upstream
+  function for re-verification when the dep is bumped.
+- **Real `ContractDeploy` serialization.** In `--exact` mode the
+  transaction-byte-limit check now uses
+  `tagged_serialize(ContractDeploy)` instead of the estimator constant.
+  Pattern1: real tx size 2,257 bytes vs estimator 7,503 (the deploy
+  envelope is much smaller than the rough constant assumed).
+- **Headroom warnings.** A passing check whose headroom is under
+  `max(5 KiB, 10% of limit)` now emits a `WARN` outcome (still
+  exit 0). Helps catch contracts that fit today but won't survive
+  minor growth.
+- **`CheckOutcome` enum (`pass | warn | fail`)** added to JSON output
+  alongside the deprecated `fits` boolean. CI scripts that want the
+  three-way verdict should read `outcome`; scripts using `fits`
+  continue to work for one release.
+- **`headroom_threshold_bytes`** exposed per check in JSON.
+- **Exact-mode breakdown** in human + JSON output:
+  `exact bytes_written = X (= Y tree_copy + Z map_insert)`.
+- **2 new integration tests:** `json_includes_outcome_field`,
+  `warns_when_headroom_under_threshold`.
+
 ### Added
 
 - Initial MVP. Reads a compactc build directory, sums verifier-key

@@ -26,6 +26,7 @@ exact = [
     "dep:midnight-storage",
     "dep:midnight-storage-core",
     "dep:midnight-base-crypto",
+    "dep:rand",
 ]
 
 [dependencies]
@@ -45,6 +46,7 @@ midnight-serialize       = { git = "https://github.com/midnightntwrk/midnight-le
 midnight-storage         = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
 midnight-storage-core    = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
 midnight-base-crypto     = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
+rand                     = { version = "0.8", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

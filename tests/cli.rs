@@ -102,6 +102,45 @@ fn exact_flag_without_feature_errors_clearly() {
 }
 
 #[test]
+fn json_includes_outcome_field() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    let out = bin()
+        .arg(fixture.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(parsed["checks"]["block_bytes_written"]["outcome"], "pass");
+    // Deprecated `fits` boolean still emitted for back-compat.
+    assert_eq!(parsed["checks"]["block_bytes_written"]["fits"], true);
+    // Headroom threshold is reported.
+    assert!(parsed["checks"]["block_bytes_written"]["headroom_threshold_bytes"]
+        .as_u64()
+        .unwrap() > 0);
+}
+
+#[test]
+fn warns_when_headroom_under_threshold() {
+    // 15 circuits at 3000 bytes each → just under the 50 KiB block limit.
+    let circuits: Vec<(String, usize)> = (0..15).map(|i| (format!("c{i}"), 3000)).collect();
+    let refs: Vec<(&str, usize)> = circuits.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+    let fixture = build_fixture("Tight", &refs);
+    let out = bin()
+        .arg(fixture.path())
+        .arg("--json")
+        .assert()
+        .success() // still fits — exit 0
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(parsed["checks"]["block_bytes_written"]["outcome"], "warn");
+}
+
+#[test]
 fn missing_keys_dir_errors_clearly() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("compiler")).unwrap();

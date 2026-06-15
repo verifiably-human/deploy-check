@@ -7,7 +7,7 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 
-//! Per-ceiling pass/fail evaluation and reporting.
+//! Per-ceiling pass/warn/fail evaluation and reporting.
 //!
 //! The four ceilings from `contract-deploy-size-limits.md`:
 //!
@@ -20,6 +20,22 @@ use crate::artifacts::Artifacts;
 use crate::limits::Limits;
 use serde::Serialize;
 use std::io::Write;
+
+/// Breakdown of values produced by the real ledger cost model
+/// (only populated when `--exact` ran successfully). All fields are
+/// optional so the report stays meaningful in estimator-only mode.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExactSizes {
+    /// `bytes_written` total: map_insert + tree_copy.
+    pub bytes_written: u64,
+    /// `tree_copy` portion of `bytes_written`.
+    pub tree_copy_bytes_written: u64,
+    /// `map_insert` portion of `bytes_written`.
+    pub map_insert_bytes_written: u64,
+    /// Tagged-serialized length of the `ContractDeploy`. Used as the
+    /// transaction-byte-limit check value in exact mode.
+    pub deploy_serialized_bytes: u64,
+}
 
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -41,15 +57,23 @@ pub struct Totals {
     /// Sum of verifier-key file sizes. Lower bound on bytes_written.
     pub verifier_key_bytes_total: u64,
     /// Estimated bytes_written for the deploy, including tree pointer
-    /// overhead. See `report::estimate_bytes_written`. Always present.
+    /// overhead. Always present.
     pub estimated_bytes_written: u64,
-    /// Exact `bytes_written` from `cost_model.tree_copy` over the real
-    /// `ContractState`. Present only when run with `--exact` (and the
-    /// binary was built with `--features exact`).
+    /// Exact `bytes_written` (= map_insert + tree_copy). Present only
+    /// when run with `--exact`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_bytes_written: Option<u64>,
+    /// `tree_copy` portion of exact bytes_written. Present only in exact mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_tree_copy_bytes_written: Option<u64>,
+    /// `map_insert` portion of exact bytes_written. Present only in exact mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_map_insert_bytes_written: Option<u64>,
     /// Estimated serialized transaction size.
     pub estimated_tx_bytes: u64,
+    /// Real tagged-serialized ContractDeploy size. Present only in exact mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_deploy_serialized_bytes: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,19 +83,34 @@ pub struct Checks {
     pub per_entry_point_metadata: CheckResult,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckOutcome {
+    Pass,
+    Warn,
+    Fail,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CheckResult {
+    pub outcome: CheckOutcome,
+    /// Deprecated alias for outcome != Fail. Kept for one release as a
+    /// boolean shortcut consumed by older CI scripts.
     pub fits: bool,
     pub used: u64,
     pub limit: u64,
+    /// Threshold below which a passing check upgrades to a warning.
+    pub headroom_threshold_bytes: u64,
     pub message: String,
 }
 
 impl Report {
+    /// True when every check is Pass or Warn. CI gates that want to
+    /// treat warnings as failures should look at the individual outcomes.
     pub fn fits(&self) -> bool {
-        self.checks.block_bytes_written.fits
-            && self.checks.transaction_byte_limit.fits
-            && self.checks.per_entry_point_metadata.fits
+        self.checks.block_bytes_written.outcome != CheckOutcome::Fail
+            && self.checks.transaction_byte_limit.outcome != CheckOutcome::Fail
+            && self.checks.per_entry_point_metadata.outcome != CheckOutcome::Fail
     }
 
     pub fn print_human(&self, out: &mut impl Write) -> std::io::Result<()> {
@@ -87,24 +126,44 @@ impl Report {
             )?;
         }
         writeln!(out)?;
-        match self.totals.exact_bytes_written {
-            Some(exact) => writeln!(
+        if let (Some(exact), Some(tree), Some(insert)) = (
+            self.totals.exact_bytes_written,
+            self.totals.exact_tree_copy_bytes_written,
+            self.totals.exact_map_insert_bytes_written,
+        ) {
+            writeln!(
                 out,
-                "Totals: VK sum = {} bytes; exact bytes_written = {} bytes (estimator said {})",
-                self.totals.verifier_key_bytes_total, exact, self.totals.estimated_bytes_written
-            )?,
-            None => writeln!(
+                "Totals: VK sum = {} bytes; exact bytes_written = {} (= {} tree_copy + {} map_insert) (estimator said {})",
+                self.totals.verifier_key_bytes_total,
+                exact,
+                tree,
+                insert,
+                self.totals.estimated_bytes_written
+            )?;
+            if let Some(serialized) = self.totals.exact_deploy_serialized_bytes {
+                writeln!(
+                    out,
+                    "        exact transaction size = {} bytes (estimator said {})",
+                    serialized, self.totals.estimated_tx_bytes
+                )?;
+            }
+        } else {
+            writeln!(
                 out,
                 "Totals: VK sum = {} bytes; estimated bytes_written = {} bytes (run with --exact for the real value)",
                 self.totals.verifier_key_bytes_total, self.totals.estimated_bytes_written
-            )?,
+            )?;
         }
         writeln!(out)?;
-        let pf = |c: &CheckResult| if c.fits { "PASS" } else { "FAIL" };
+        let tag = |c: &CheckResult| match c.outcome {
+            CheckOutcome::Pass => "PASS",
+            CheckOutcome::Warn => "WARN",
+            CheckOutcome::Fail => "FAIL",
+        };
         writeln!(
             out,
             "[{}] block bytes_written:   {} / {}  ({})",
-            pf(&self.checks.block_bytes_written),
+            tag(&self.checks.block_bytes_written),
             self.checks.block_bytes_written.used,
             self.checks.block_bytes_written.limit,
             self.checks.block_bytes_written.message
@@ -112,7 +171,7 @@ impl Report {
         writeln!(
             out,
             "[{}] transaction size:      {} / {}  ({})",
-            pf(&self.checks.transaction_byte_limit),
+            tag(&self.checks.transaction_byte_limit),
             self.checks.transaction_byte_limit.used,
             self.checks.transaction_byte_limit.limit,
             self.checks.transaction_byte_limit.message
@@ -120,7 +179,7 @@ impl Report {
         writeln!(
             out,
             "[{}] per-entry-point cap:   {} / {}  ({})",
-            pf(&self.checks.per_entry_point_metadata),
+            tag(&self.checks.per_entry_point_metadata),
             self.checks.per_entry_point_metadata.used,
             self.checks.per_entry_point_metadata.limit,
             self.checks.per_entry_point_metadata.message
@@ -138,22 +197,26 @@ impl Report {
 /// Per-child pointer overhead in the on-chain storage tree.
 /// Matches `PERSISTENT_HASH_BYTES` (32) in midnight-ledger.
 const PERSISTENT_HASH_BYTES: u64 = 32;
-/// Per-entry-point wrapper overhead (name + ContractOperation framing).
-/// Rough; the ledger crate gives an exact figure, but for this MVP we
-/// use the doc's rule-of-thumb upper bound.
+/// Per-entry-point wrapper overhead.
 const ENTRY_POINT_OVERHEAD: u64 = 200;
-/// Wrapping ContractState overhead (operations-map root, balance map,
-/// maintenance authority commitments, initial state ADT root).
-/// Rough constant; refine when wiring the ledger crate.
+/// Wrapping ContractState overhead.
 const CONTRACT_STATE_OVERHEAD: u64 = 1024;
-/// Wrapping transaction overhead (Intent, balance commitments,
-/// zswap offers, signatures). Rough; refine.
+/// Wrapping transaction overhead (estimator-only).
 const TRANSACTION_OVERHEAD: u64 = 4096;
+
+/// Floor for the headroom-warning threshold. A check using more than
+/// `limit - max(5 KiB, 10% of limit)` bytes triggers a warning.
+const HEADROOM_FLOOR_BYTES: u64 = 5 * 1024;
+
+fn headroom_threshold(limit: u64) -> u64 {
+    let ten_percent = limit / 10;
+    HEADROOM_FLOOR_BYTES.max(ten_percent)
+}
 
 pub fn evaluate(
     artifacts: &Artifacts,
     limits: &Limits,
-    exact_bytes_written: Option<u64>,
+    exact: Option<ExactSizes>,
 ) -> Report {
     let circuits: Vec<CircuitReport> = artifacts
         .circuits
@@ -175,27 +238,17 @@ pub fn evaluate(
         .max()
         .unwrap_or(0);
 
-    // The block-bytes-written check uses the exact value when available;
-    // otherwise it falls back to the estimator. Headroom labels reflect
-    // which source produced the number.
-    let (bytes_written_used, bytes_written_source) = match exact_bytes_written {
-        Some(b) => (b, "exact bytes_written from cost_model.tree_copy"),
-        None => (
-            estimated_bytes_written,
-            "estimated bytes_written from VK sum + tree overhead",
-        ),
+    let (bw_used, bw_source) = match exact {
+        Some(e) => (e.bytes_written, "exact bytes_written = map_insert + tree_copy"),
+        None => (estimated_bytes_written, "estimated bytes_written from VK sum + tree overhead"),
+    };
+    let (tx_used, tx_source) = match exact {
+        Some(e) => (e.deploy_serialized_bytes, "exact serialized ContractDeploy size"),
+        None => (estimated_tx_bytes, "estimated serialized transaction size"),
     };
 
-    let block_bytes_written = check(
-        bytes_written_source,
-        bytes_written_used,
-        limits.block_bytes_written,
-    );
-    let transaction_byte_limit = check(
-        "estimated serialized transaction size",
-        estimated_tx_bytes,
-        limits.transaction_byte_limit,
-    );
+    let block_bytes_written = check(bw_source, bw_used, limits.block_bytes_written);
+    let transaction_byte_limit = check(tx_source, tx_used, limits.transaction_byte_limit);
     let per_entry_point_metadata = check(
         "largest (entry_point, ContractOperation) pair",
         max_ep_bytes,
@@ -209,8 +262,11 @@ pub fn evaluate(
             circuit_count,
             verifier_key_bytes_total: vk_sum,
             estimated_bytes_written,
-            exact_bytes_written,
+            exact_bytes_written: exact.map(|e| e.bytes_written),
+            exact_tree_copy_bytes_written: exact.map(|e| e.tree_copy_bytes_written),
+            exact_map_insert_bytes_written: exact.map(|e| e.map_insert_bytes_written),
             estimated_tx_bytes,
+            exact_deploy_serialized_bytes: exact.map(|e| e.deploy_serialized_bytes),
         },
         checks: Checks {
             block_bytes_written,
@@ -220,10 +276,6 @@ pub fn evaluate(
     }
 }
 
-/// MVP estimator. Mirrors `tree_copy` accounting from `cost_model.rs`:
-/// bytes_written = sum(node.data.len + child_count * PERSISTENT_HASH_BYTES).
-/// We model: per circuit, one operations-map entry with a child pointer
-/// plus the VK bytes. Plus the ContractState wrapper.
 fn estimate_bytes_written(circuit_count: u64, vk_sum: u64) -> u64 {
     let map_node_overhead = circuit_count * PERSISTENT_HASH_BYTES * 2;
     let per_entry_wrapper = circuit_count * ENTRY_POINT_OVERHEAD;
@@ -231,19 +283,29 @@ fn estimate_bytes_written(circuit_count: u64, vk_sum: u64) -> u64 {
 }
 
 fn check(what: &str, used: u64, limit: u64) -> CheckResult {
-    let fits = used <= limit;
+    let threshold = headroom_threshold(limit);
+    let outcome = if used > limit {
+        CheckOutcome::Fail
+    } else if limit.saturating_sub(used) < threshold {
+        CheckOutcome::Warn
+    } else {
+        CheckOutcome::Pass
+    };
+    let headroom = limit.saturating_sub(used);
+    let message = match outcome {
+        CheckOutcome::Pass => format!("{} bytes used, {} headroom", used, headroom),
+        CheckOutcome::Warn => format!(
+            "{} bytes used, only {} headroom (under {} threshold — fits today, may not survive growth)",
+            used, headroom, threshold
+        ),
+        CheckOutcome::Fail => format!("{} bytes used, {} OVER ({})", used, used - limit, what),
+    };
     CheckResult {
-        fits,
+        outcome,
+        fits: outcome != CheckOutcome::Fail,
         used,
         limit,
-        message: if fits {
-            format!(
-                "{} bytes used, {} headroom",
-                used,
-                limit.saturating_sub(used)
-            )
-        } else {
-            format!("{} bytes used, {} OVER ({})", used, used - limit, what)
-        },
+        headroom_threshold_bytes: threshold,
+        message,
     }
 }
