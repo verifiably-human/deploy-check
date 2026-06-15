@@ -90,6 +90,54 @@ fn json_mode_emits_machine_readable() {
 }
 
 #[test]
+fn sarif_mode_emits_valid_envelope_with_no_results_on_pass() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    let out = bin()
+        .arg(fixture.path())
+        .arg("--format")
+        .arg("sarif")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(parsed["version"], "2.1.0");
+    assert_eq!(parsed["runs"][0]["tool"]["driver"]["name"], "deploy-check");
+    assert!(parsed["runs"][0]["results"].as_array().unwrap().is_empty());
+    // Catalog lists every rule regardless of whether any fired.
+    let rules = parsed["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("rules array");
+    assert!(rules.len() >= 3);
+}
+
+#[test]
+fn sarif_mode_emits_result_for_failed_check() {
+    // Force a block-bytes-written failure by piling on circuits.
+    let circuits: Vec<(String, usize)> = (0..20).map(|i| (format!("c{i}"), 3000)).collect();
+    let refs: Vec<(&str, usize)> = circuits.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+    let fixture = build_fixture("Big", &refs);
+    let out = bin()
+        .arg(fixture.path())
+        .arg("--format")
+        .arg("sarif")
+        .assert()
+        .failure() // ceiling exceeded → exit 1
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    let results = parsed["runs"][0]["results"].as_array().expect("results array");
+    assert!(!results.is_empty());
+    let r = &results[0];
+    assert_eq!(r["ruleId"], "ceiling:block-bytes-written");
+    assert_eq!(r["level"], "error");
+    assert!(r["properties"]["overage_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(r["properties"]["mode"], "estimator");
+}
+
+#[test]
 #[cfg(not(feature = "exact"))]
 fn exact_flag_without_feature_errors_clearly() {
     let fixture = build_fixture("Small", &[("foo", 2875)]);

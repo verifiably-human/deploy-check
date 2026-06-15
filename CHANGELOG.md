@@ -6,6 +6,20 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — SARIF 2.1.0 output
+
+- **`--format sarif` flag.** Emits a SARIF 2.1.0 log to stdout
+  suitable for upload via `github/codeql-action/upload-sarif`. Failed
+  ceiling checks become SARIF results with `level: error`; the
+  rule catalog lists every defined ceiling so the GH UI has help
+  text even for rules that didn't fire.
+- **`--format <text|json|sarif>`** unified flag. Default `text`.
+- **`--json` is now a deprecated alias** for `--format json`. Still
+  works; will be removed in a future release.
+- **2 new integration tests** covering SARIF on a passing fixture
+  (empty results array) and a failing fixture (one result with
+  overage details).
+
 ### Added
 
 - Initial MVP. Reads a compactc build directory, sums verifier-key

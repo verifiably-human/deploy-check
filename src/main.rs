@@ -18,10 +18,18 @@ mod artifacts;
 mod exact;
 mod limits;
 mod report;
+mod sarif;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+    Sarif,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "deploy-check", version, about, long_about = None)]
@@ -37,7 +45,13 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     limits_file: Option<PathBuf>,
 
-    /// Output report as JSON instead of human-readable.
+    /// Output format. text = human-readable (default). json = the
+    /// report serialised to JSON. sarif = SARIF 2.1.0 log for upload
+    /// via github/codeql-action/upload-sarif.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+
+    /// Deprecated alias for --format json. Will be removed in a future release.
     #[arg(long)]
     json: bool,
 
@@ -81,11 +95,23 @@ fn main() -> Result<()> {
 
     let report = report::evaluate(&artifacts, &limits, exact_bytes_written);
 
-    if cli.json {
-        serde_json::to_writer_pretty(std::io::stdout(), &report)?;
-        println!();
-    } else {
-        report.print_human(&mut std::io::stdout())?;
+    // --json kept as a back-compat alias for --format json; it overrides
+    // --format if both are given.
+    let effective_format = if cli.json { OutputFormat::Json } else { cli.format };
+
+    match effective_format {
+        OutputFormat::Text => {
+            report.print_human(&mut std::io::stdout())?;
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+            println!();
+        }
+        OutputFormat::Sarif => {
+            let log = sarif::build_log(&report, &cli.build_dir, env!("CARGO_PKG_VERSION"));
+            serde_json::to_writer_pretty(std::io::stdout(), &log)?;
+            println!();
+        }
     }
 
     if report.fits() {

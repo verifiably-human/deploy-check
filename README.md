@@ -68,7 +68,12 @@ you must compile without `--skip-zk` for this tool to work.
 - `--exact` — use real `cost_model.tree_copy` from midnight-ledger
   instead of the estimator. Requires the binary to be built with
   `--features exact`; otherwise returns a clear error.
-- `--json` — emit a JSON report instead of human-readable.
+- `--format <text|json|sarif>` — output format. `text` is the default
+  human-readable. `json` emits the report serialised. `sarif` emits a
+  SARIF 2.1.0 log suitable for upload via
+  `github/codeql-action/upload-sarif` (failed ceiling checks become
+  SARIF results with `level: error`).
+- `--json` — deprecated alias for `--format json`. Still works.
 
 ### Exit codes
 
