@@ -1,0 +1,166 @@
+{
+  "source": "midnight-node node-2.1.0-beta.1 (commit e01e41f83e391b5d36d30b6d62eccc19dcf0fd16): the `limits` object of res/<network>/ledger-parameters-config.json, copied verbatim. Weight parameters: runtime/src/lib.rs:307-318 (2 s block weight, 75% normal dispatch ratio, frame_system with_sensible_defaults 10% block initialization), polkadot-sdk ExtrinsicBaseWeight (108,157 ns), pallets/midnight-system/src/lib.rs:26 EXTRA_WEIGHT_TX_SIZE (20 ms, governance-settable via midnight.setTxSizeWeight).",
+  "weight": {
+    "block_weight_ps": 2000000000000,
+    "normal_dispatch_percent": 75,
+    "block_init_percent": 10,
+    "base_extrinsic_ps": 108157000,
+    "flat_tx_weight_ps": 20000000000
+  },
+  "networks": {
+    "mainnet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "preprod": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "preview": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "stagenet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808,
+        "max_contract_metadata_size": 10485760
+      }
+    },
+    "qanet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "perfnet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "govnet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808
+      }
+    },
+    "devnet": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808,
+        "max_contract_metadata_size": 10485760
+      }
+    },
+    "dev": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808,
+        "max_contract_metadata_size": 10485760
+      }
+    },
+    "local": {
+      "limits": {
+        "transaction_byte_limit": 1048576,
+        "time_to_dismiss_per_byte": 2000000,
+        "min_time_to_dismiss": 15000000000,
+        "block_limits": {
+          "readTime": 2000000000000,
+          "computeTime": 2000000000000,
+          "blockUsage": 1000000,
+          "bytesWritten": 50000,
+          "bytesChurned": 50000000
+        },
+        "block_withdrawal_minimum_multiple": 9223372036854775808,
+        "max_contract_metadata_size": 10485760
+      }
+    }
+  }
+}

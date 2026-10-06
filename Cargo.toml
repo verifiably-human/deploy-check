@@ -14,10 +14,10 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 # Default: lightweight estimator only. No midnight-ledger linkage.
 default = []
-# Exact mode: link the midnight-ledger workspace and use the real
-# cost_model.tree_copy() invocation. First build is heavy (multi-minute
-# cold-cache); subsequent builds reuse cargo's incremental cache.
-exact = [
+# Exact mode, one backend per ledger major version. Each links that
+# ledger's crates and uses its real cost_model.tree_copy(). First build is
+# heavy (multi-minute cold cache); later builds reuse cargo's cache.
+exact-ledger8 = [
     "dep:midnight-ledger",
     "dep:midnight-onchain-state",
     "dep:midnight-onchain-vm",
@@ -27,6 +27,16 @@ exact = [
     "dep:midnight-storage-core",
     "dep:midnight-base-crypto",
 ]
+exact-ledger9 = [
+    "dep:onchain-state-l9",
+    "dep:onchain-vm-l9",
+    "dep:transient-crypto-l9",
+    "dep:transient-crypto-l9-old",
+    "dep:serialize-l9",
+    "dep:storage-l9",
+]
+# Backwards-compatible alias from 0.1: `--features exact` meant ledger 8.
+exact = ["exact-ledger8"]
 
 [dependencies]
 anyhow = "1"
@@ -46,10 +56,33 @@ midnight-storage         = { git = "https://github.com/midnightntwrk/midnight-le
 midnight-storage-core    = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
 midnight-base-crypto     = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "ledger-8.1.0", optional = true }
 
+# Midnight ledger 9 crates, pinned to ledger-9.1.0.0-rc.4 (the Q3 release
+# stack's ledger). Renamed so they can coexist with the ledger 8 pins.
+# transient-crypto-l9-old is the crates.io midnight-transient-crypto 2.x
+# that ledger 9's onchain-state uses for its v2 (ZKIR v2) key slot.
+onchain-state-l9        = { package = "midnight-onchain-state", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+onchain-vm-l9           = { package = "midnight-onchain-vm", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+transient-crypto-l9     = { package = "midnight-transient-crypto", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+serialize-l9            = { package = "midnight-serialize", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+storage-l9              = { package = "midnight-storage", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+transient-crypto-l9-old = { package = "midnight-transient-crypto", version = "^2.0.0", optional = true }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+# Required by the exact-ledger9 backend, and copied from the ledger 9
+# workspace's own [patch.crates-io] (Cargo.toml at cd652d7f): ledger 9's
+# onchain-state reaches crates.io midnight-transient-crypto 2.x for its v2
+# key slot, which in turn uses crates.io midnight-serialize and
+# midnight-base-crypto. Without these patches those resolve to different
+# copies than the git ones and the traits do not line up. The ledger 8
+# crates come from git, not crates.io, so these patches do not touch them.
+[patch.crates-io]
+midnight-base-crypto      = { git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38" }
+midnight-serialize        = { git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38" }
+midnight-transient-crypto = { git = "https://github.com/midnightntwrk/midnight-ledger.git", tag = "transient-crypto-2.2.0-rc.1" }
 
 [profile.release]
 opt-level = 3

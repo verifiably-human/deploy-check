@@ -90,7 +90,7 @@ fn json_mode_emits_machine_readable() {
 }
 
 #[test]
-#[cfg(not(feature = "exact"))]
+#[cfg(not(any(feature = "exact-ledger8", feature = "exact-ledger9")))]
 fn exact_flag_without_feature_errors_clearly() {
     let fixture = build_fixture("Small", &[("foo", 2875)]);
     bin()
@@ -98,7 +98,7 @@ fn exact_flag_without_feature_errors_clearly() {
         .arg("--exact")
         .assert()
         .failure()
-        .stderr(contains("--exact requires the `exact` cargo feature"));
+        .stderr(contains("--exact needs a ledger backend"));
 }
 
 #[test]
@@ -115,4 +115,174 @@ fn missing_keys_dir_errors_clearly() {
         .assert()
         .failure()
         .stderr(contains("no keys/ directory"));
+}
+
+// Regression: the Dominion deployments (gist ADGLx/c9307e5e, 2026-09-30).
+// Charged bytes_written as reported by the chain: the 9-circuit Deck was
+// confirmed; the 12- and 14-circuit merged Tables were rejected with
+// "Transaction would exhaust the block limits". All three fit the 50,000
+// byte block budget, which is why deploy-check 0.1 passed all three.
+fn dominion(bytes_written: u64) -> assert_cmd::assert::Assert {
+    let fixture = build_fixture("Dominion", &[("c0", 2875)]);
+    bin()
+        .arg(fixture.path())
+        .arg("--bytes-written")
+        .arg(bytes_written.to_string())
+        .assert()
+}
+
+#[test]
+fn dominion_deck_27978_fits() {
+    dominion(27_978)
+        .success()
+        .stdout(contains("[PASS] per-transaction weight"))
+        .stdout(contains("Result: FITS"));
+}
+
+#[test]
+fn dominion_trimmed_table_35143_fails_per_tx_but_passes_block_budget() {
+    dominion(35_143)
+        .failure()
+        .stdout(contains("[FAIL] per-transaction weight"))
+        .stdout(contains("[PASS] block bytes_written"))
+        .stdout(contains("Transaction would exhaust the block limits"));
+}
+
+#[test]
+fn dominion_full_table_38168_fails_per_tx_but_passes_block_budget() {
+    dominion(38_168)
+        .failure()
+        .stdout(contains("[FAIL] per-transaction weight"))
+        .stdout(contains("[PASS] block bytes_written"));
+}
+
+#[test]
+fn per_tx_allowance_is_31997_bytes_written_in_json() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    let out = bin()
+        .arg(fixture.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let w = &v["checks"]["per_transaction_weight"];
+    assert_eq!(w["binding_dimension"], "bytes_written");
+    assert_eq!(w["limit"], 31_997);
+    assert_eq!(w["max_extrinsic_ps"], 1_299_891_843_000u64);
+}
+
+#[test]
+fn boundary_31997_fits_and_31998_does_not() {
+    dominion(31_997).success();
+    dominion(31_998).failure();
+}
+
+#[test]
+fn weight_overrides_move_the_ceiling() {
+    // A 90% normal dispatch ratio raises max_extrinsic to ~1.6 s, which
+    // admits the 35,143-byte deploy.
+    let fixture = build_fixture("Dominion", &[("c0", 2875)]);
+    bin()
+        .arg(fixture.path())
+        .args([
+            "--bytes-written",
+            "35143",
+            "--normal-dispatch-percent",
+            "90",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("[PASS] per-transaction weight"));
+}
+
+#[test]
+fn accepts_node_ledger_parameters_config_file() {
+    // Shape of midnight-node res/<network>/ledger-parameters-config.json
+    // (cost_model trimmed; it is ignored).
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    let file = fixture.path().join("ledger-parameters-config.json");
+    fs::write(
+        &file,
+        r#"{
+  "cost_model": {},
+  "limits": {
+    "transaction_byte_limit": 1048576,
+    "time_to_dismiss_per_byte": 2000000,
+    "min_time_to_dismiss": 15000000000,
+    "block_limits": {
+      "readTime": 2000000000000,
+      "computeTime": 2000000000000,
+      "blockUsage": 1000000,
+      "bytesWritten": 60000,
+      "bytesChurned": 50000000
+    },
+    "block_withdrawal_minimum_multiple": 9223372036854775808,
+    "max_contract_metadata_size": 10485760
+  }
+}"#,
+    )
+    .unwrap();
+    // 60,000 bytes_written per block gives a per-tx allowance of 38,396,
+    // so 38,168 now fits.
+    bin()
+        .arg(fixture.path())
+        .arg("--limits-file")
+        .arg(&file)
+        .args(["--bytes-written", "38168"])
+        .assert()
+        .success()
+        .stdout(contains("[PASS] per-entry-point cap"));
+}
+
+#[test]
+fn accepts_legacy_flat_limits_file() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    let file = fixture.path().join("legacy.json");
+    fs::write(
+        &file,
+        r#"{"transaction_byte_limit":1048576,"max_contract_metadata_size":10485760,"block_bytes_written":50000}"#,
+    )
+    .unwrap();
+    bin()
+        .arg(fixture.path())
+        .arg("--limits-file")
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(contains("legacy flat format"));
+}
+
+#[test]
+fn unknown_network_lists_presets() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    bin()
+        .arg(fixture.path())
+        .args(["--network", "nosuchnet"])
+        .assert()
+        .failure()
+        .stderr(contains("available presets"))
+        .stderr(contains("preprod"));
+}
+
+#[test]
+fn list_networks_prints_presets() {
+    bin()
+        .arg("--list-networks")
+        .assert()
+        .success()
+        .stdout(contains("mainnet"))
+        .stdout(contains("stagenet"));
+}
+
+#[test]
+fn mainnet_preset_skips_metadata_cap_it_does_not_set() {
+    let fixture = build_fixture("Small", &[("foo", 2875)]);
+    bin()
+        .arg(fixture.path())
+        .assert()
+        .success()
+        .stdout(contains("[SKIP] per-entry-point cap"));
 }

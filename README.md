@@ -1,153 +1,119 @@
 # deploy-check
 
-Checks whether a compiled Midnight Compact contract fits under the deploy
-limits enforced by the ledger.
+Checks whether a compiled Midnight Compact contract can be deployed in a single transaction.
 
-The Midnight ledger rejects a contract deploy when any of four ceilings
-is exceeded:
+A deploy writes every circuit's verifier key to the ledger, so contracts with many circuits run into limits. The one a deploy usually hits first is not the 50,000-byte block budget but the node's **per-transaction weight limit**, which caps a single transaction at about **32,000 bytes written** on every current network. A deploy between those two numbers fits the block budget and is still rejected at submission with `Transaction would exhaust the block limits`. deploy-check 0.1 checked only the block budget and passed such deploys; this version checks both.
 
-| Ceiling | Value (INITIAL_LIMITS) | Where enforced |
+## The ceilings
+
+| Ceiling | Value (node 2.1.0-beta.1 presets) | Where enforced |
 |---|---|---|
-| Block `bytes_written` budget | 50 KiB | `Transaction::fees → cost.normalize` |
-| Transaction byte limit | 1 MiB | `Transaction::well_formed` |
-| Per-entry-point metadata cap | 10 MiB | `check_entry_point_metadata_sizes` |
-| `VerifierKeyTooLarge` | declared, not enforced | `ledger/src/error.rs` |
+| Per-transaction weight | about 64% of each block dimension: **31,997** of 50,000 `bytes_written` | `frame_system::CheckWeight` (`max_extrinsic`), node weight from `get_tx_weight` |
+| Block `bytes_written` budget | 50,000 bytes | ledger `TransactionLimits.block_limits` |
+| Transaction byte limit | 1 MiB | ledger well-formedness |
+| Per-entry-point metadata cap | 10 MiB where the preset sets it; ledger 9 only | `check_entry_point_metadata_sizes` |
 
-The dominant constraint for real contracts is the 50 KiB block
-`bytes_written` budget: deploying a contract is a pure write, and its
-cost is `tree_copy(initial_state)` — the serialized size of the
-verifier keys, operations map, maintenance authority, and initial
-state ADT, plus 32 bytes per child pointer.
+### How the per-transaction ceiling is derived
 
-`deploy-check` reads a compactc build directory, computes the deploy
-footprint, and reports pass/fail per ceiling.
+The node weighs a Midnight transaction as its largest normalized cost dimension times the block weight, plus a flat per-transaction weight (`get_tx_weight`, `pallets/midnight/src/lib.rs:635-640`; `scale_normalized_cost`, `ledger/src/versions/common/mod.rs:1367`). Substrate rejects any normal-class transaction heavier than `max_extrinsic`, which `BlockWeights::with_sensible_defaults` derives as the normal share of the block, less the block-initialization allowance, less the base extrinsic weight (`runtime/src/lib.rs:307-318`). All references are to midnight-node `e01e41f8` (node-2.1.0-beta.1).
+
+With the node's parameters:
+
+- block weight 2 s; normal dispatch ratio 75%; block initialization 10%; base extrinsic 108,157 ns, so `max_extrinsic` = 1.5 s − 0.2 s − 108,157 ns = 1,299.892 ms;
+- flat per-transaction weight 20 ms (`EXTRA_WEIGHT_TX_SIZE`, changeable by governance through `midnight.setTxSizeWeight`);
+- so a transaction may use (1,299.892 − 20) ÷ 2,000 ≈ 63.99% of any block dimension, which is 31,997 of the 50,000 `bytes_written`.
+
+Real deployments land on either side of it exactly. These figures are from a team that reported their charged `bytes_written`:
+
+| Deployment | bytes_written | Weight | Result on chain | deploy-check 0.1 | This version |
+|---|---:|---:|---|---|---|
+| 9 circuits | 27,978 | 1,139 ms | confirmed | PASS | PASS |
+| 12 circuits | 35,143 | 1,426 ms | rejected | PASS (wrong) | FAIL |
+| 14 circuits | 38,168 | 1,547 ms | rejected | PASS (wrong) | FAIL |
+
+A deploy too large for one transaction can still be deployed: deploy a subset of its circuits, then add the remaining verifier keys with maintenance transactions (`insertVerifierKey`).
+
+## Limits are data, not code
+
+deploy-check is not tied to one ledger version. Limits come from:
+
+- **Network presets** (`--network`, default `mainnet`). `presets/networks.json` copies the `limits` object of each `res/<network>/ledger-parameters-config.json` from midnight-node verbatim, plus the weight parameters above. Run `deploy-check --list-networks` to see them. Every current preset has the same values: `block_usage` 1,000,000; `bytes_written` 50,000; `bytes_churned` 50,000,000; read and compute 2 s; transaction limit 1 MiB. To refresh for a new node release, regenerate the file from that release's `res/` directory.
+- **A limits file** (`--limits-file FILE`), which overrides `--network`. It may be a node `ledger-parameters-config.json` from any node release, used unchanged; a bare node `limits` object; or the deploy-check 0.1 flat format. A top-level `weight` object, in the shape of the one in `presets/networks.json`, overrides the weight parameters.
+- **Flags** for each weight parameter, applied last: `--block-weight-ns`, `--normal-dispatch-percent`, `--block-init-percent`, `--base-extrinsic-ns`, `--flat-tx-weight-ns`.
+
+Do not use `INITIAL_LIMITS` from the ledger crate as a network's limits. It is a library default that no network runs; it understates `block_usage` 5x, `bytes_churned` 50x and the read and compute budgets 2x.
 
 ## Install
 
-Two install variants. Pick based on whether you want the lightweight
-estimator only, or the real `cost_model.tree_copy` numbers from the
-midnight-ledger crate.
-
 ```sh
-# Lightweight: estimator-only. Fast build, no ledger crate linkage.
+# Estimator only. Fast build, no ledger crates.
 cargo install --git https://github.com/verifiably-human/deploy-check
 
-# Exact: links midnight-ledger workspace. First build pulls ~50 crates
-# and takes several minutes; subsequent builds reuse the cache.
-cargo install --git https://github.com/verifiably-human/deploy-check --features exact
+# Exact mode for ledger 8 (pinned to ledger-8.1.0). `--features exact` is an alias.
+cargo install --git https://github.com/verifiably-human/deploy-check --features exact-ledger8
+
+# Exact mode for ledger 9 (pinned to ledger-9.1.0.0-rc.4, commit cd652d7f).
+cargo install --git https://github.com/verifiably-human/deploy-check --features exact-ledger9
+
+# Both; choose at run time with --ledger 8 or --ledger 9.
+cargo install --git https://github.com/verifiably-human/deploy-check --features exact-ledger8,exact-ledger9
 ```
 
-The exact-mode build requires **rustc 1.95 or newer** (midnight-ledger's
-transitive dependency on `sysinfo` enforces this). The estimator-only
-build works on the same minimum.
+Exact builds link the ledger crates and take several minutes from a cold cache. All builds need rustc 1.95 or newer.
 
 ## Usage
 
 ```sh
-deploy-check <build-dir>            # estimator mode (default)
-deploy-check <build-dir> --exact    # exact tree_copy mode (requires --features exact at install)
+deploy-check <build-dir>                          # estimator, mainnet preset
+deploy-check <build-dir> --exact                  # exact bytes_written from the linked ledger
+deploy-check <build-dir> --exact --ledger 9       # pick a backend when several are compiled in
+deploy-check <build-dir> --network preprod        # another preset
+deploy-check <build-dir> --limits-file ledger-parameters-config.json
+deploy-check <build-dir> --bytes-written 35143    # check a figure you already have
+deploy-check --list-networks
 ```
 
-`<build-dir>` is the directory compactc produced (the same path you
-passed as the second argument to `compactc`). It must contain:
+`<build-dir>` is the directory `compact compile` produced. It must contain `compiler/contract-info.json` and `keys/<circuit>.verifier` for every circuit, so compile without `--skip-zk`.
 
-- `compiler/contract-info.json`
-- `keys/<circuit>.verifier` for every circuit declared in
-  `contract-info.json`
+Other flags: `--json` emits a JSON report.
 
-The `keys/` directory only exists after `zkir compile-many` ran, so
-you must compile without `--skip-zk` for this tool to work.
+`--bytes-written` checks a `bytes_written` you obtained elsewhere, for example from the ledger's `Transaction.cost()` or a chain explorer. It takes precedence over exact and estimated values.
 
-### Flags
-
-- `--network <mainnet|preview|qanet|local>` — pick the limits preset.
-  All presets currently track `INITIAL_LIMITS`; the flag exists so we
-  can diverge if governance raises a limit on a network.
-- `--limits-file <path>` — JSON of `TransactionLimits` overriding the
-  preset. Useful for testing against custom devnets.
-- `--exact` — use real `cost_model.tree_copy` from midnight-ledger
-  instead of the estimator. Requires the binary to be built with
-  `--features exact`; otherwise returns a clear error.
-- `--json` — emit a JSON report instead of human-readable.
-
-### Exit codes
-
-- `0` — fits under every ceiling.
-- `1` — at least one ceiling exceeded.
-- non-zero (other) — read or parse error.
+Exit codes: `0` fits every ceiling; `1` at least one ceiling exceeded; any other non-zero value is a read or parse error.
 
 ## Example
 
-Estimator mode (default):
-
 ```
-$ deploy-check ./pattern7-shielded-token
-deploy-check report
-===================
-
-Circuits (5):
-  initializeToken                      2119 bytes (VK)
-  mintShieldedComplianceToken          2119 bytes (VK)
-  receiveShieldedComplianceTokens      2119 bytes (VK)
-  compliantShieldedTransfer            2119 bytes (VK)
-  mintAndSendShielded                  2119 bytes (VK)
-
-Totals: VK sum = 10595 bytes; estimated bytes_written = 12939 bytes (run with --exact for the real value)
-
-[PASS] block bytes_written:   12939 / 50000  (37061 headroom)
-[PASS] transaction size:      17035 / 1048576  (1031541 headroom)
-[PASS] per-entry-point cap:   2319 / 10485760  (10483441 headroom)
-
-Result: FITS
-```
-
-Exact mode (`--features exact` build + `--exact` flag):
-
-```
-$ deploy-check ./pattern7-shielded-token --exact
+$ deploy-check ./build --bytes-written 35143
 ...
-Totals: VK sum = 10595 bytes; exact bytes_written = 12175 bytes (estimator said 12939)
+Totals: VK sum = 7715 bytes; bytes_written = 35143 bytes (supplied with --bytes-written)
+Limits: network preset `mainnet` (midnight-node node-2.1.0-beta.1)
 
-[PASS] block bytes_written:   12175 / 50000  (37825 headroom)
-...
-Result: FITS
+[FAIL] per-transaction weight: 35143 / 31997  (bytes_written binds; weight 1425.720 ms OVER 1299.892 ms max_extrinsic by 3146 bytes_written; the node rejects this with "Transaction would exhaust the block limits")
+[PASS] block bytes_written:    35143 / 50000  (35143 bytes used, 14857 headroom)
+[PASS] transaction size:       14187 / 1048576  (14187 bytes used, 1034389 headroom)
+[SKIP] per-entry-point cap:    not set by these limits (ledger 8 has no such cap; for a ledger 9 network, use a limits file that sets max_contract_metadata_size)
+
+Result: DOES NOT FIT
 ```
-
-The estimator is intentionally conservative (over-counts slightly), so
-a `PASS` in estimator mode is a strong signal you'll also `PASS` in
-exact mode. Use the estimator in tight dev loops; use exact mode in CI
-deploy gates.
 
 ## Modes
 
 ### Estimator (default)
 
-Sums verifier-key file sizes and adds a constant for tree-pointer
-overhead. No ledger crate linkage. Build cost: a handful of crates,
-seconds.
+Sums the verifier-key file sizes and adds constants for storage-tree overhead. The constants are sized to overshoot, so an estimator PASS implies an exact PASS. On a five-circuit test contract the estimator said 10,091 bytes against an exact 9,251 (ledger 8) and 9,261 (ledger 9).
 
-The constants (`PERSISTENT_HASH_BYTES`, `ENTRY_POINT_OVERHEAD`,
-`CONTRACT_STATE_OVERHEAD`, `TRANSACTION_OVERHEAD`) are sized to
-slightly overshoot real values so an estimator `PASS` implies an exact
-`PASS`. Verified against pattern1 (35% over) and
-pattern7-shielded-token (6% over).
+### Exact (`--features exact-ledger8` / `exact-ledger9`)
 
-### Exact (`--features exact`)
+Builds the `ContractState` the deploy would commit from the build directory's verifier keys and charges it the way the ledger's `ContractAction::Deploy` cost branch does: `tree_copy(initial_state)` plus the operations-map insert, which nets 32 bytes of `bytes_written`. This charge is identical in ledger-8.1.0 and ledger-9.1.0.0-rc.4.
 
-Links `midnight-ledger` workspace (ledger-8.1.0), constructs a real
-`ContractState` from the build dir's verifier keys, and calls
-`cost_model.tree_copy(Sp::new(state))`. The returned `bytes_written`
-is the exact value the ledger will charge against the block budget.
+Each ledger version has its own backend because the crates change shape between majors. Ledger 9's `ContractOperation` has separate slots for ZKIR v2 keys (`verifier-key[v6]`, compactc's default output) and ZKIR v3 keys (`verifier-key[v7]`, from `--feature-zkir-v3`). The ledger 9 backend puts each key in the slot its tag selects. The ledger 8 backend accepts only v6 keys, since ZKIR v3 does not exist on ledger 8.
 
-First build pulls ~50 crates and takes several minutes. Subsequent
-builds reuse cargo's incremental cache. Use this in CI gates, public
-release smoke tests, and any time the estimator's headroom is < ~5 KiB.
+### What exact mode does not include
 
-## Source of truth
-
-All limits and the cost model are pinned to
-[midnight-ledger@ledger-8.1.0](https://github.com/midnightntwrk/midnight-ledger/tree/ledger-8.1.0).
-Bumping the dep may change reported numbers; see `Cargo.toml`.
+- Writes made by the rest of the deploy transaction, such as fee payment. On chain, the charged figure is somewhat higher than the contract's own cost. If you have the chain's figure, pass it with `--bytes-written`.
+- Contract IR. Ledger 9 can store IR per entry point, but it is installed with a separate `IrInsert` maintenance update, not by the deploy.
+- Read and compute time. A deploy runs no proof and little VM code, so `bytes_written`, or for very large transactions `block_usage`, is what binds.
 
 ## Contributing
 
