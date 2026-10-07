@@ -19,6 +19,7 @@ default = []
 # heavy (multi-minute cold cache); later builds reuse cargo's cache.
 exact-ledger8 = [
     "dep:midnight-ledger",
+    "dep:rand",
     "dep:midnight-onchain-state",
     "dep:midnight-onchain-vm",
     "dep:midnight-transient-crypto",
@@ -28,6 +29,9 @@ exact-ledger8 = [
     "dep:midnight-base-crypto",
 ]
 exact-ledger9 = [
+    "dep:ledger-l9",
+    "dep:base-crypto-l9",
+    "dep:rand",
     "dep:onchain-state-l9",
     "dep:onchain-vm-l9",
     "dep:transient-crypto-l9",
@@ -43,6 +47,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 
 # Midnight ledger workspace, pinned to ledger-8.1.0. All 8 crates resolve
 # from the same git revision, so cargo's dedupe keeps a single source.
@@ -66,11 +71,13 @@ transient-crypto-l9     = { package = "midnight-transient-crypto", git = "https:
 serialize-l9            = { package = "midnight-serialize", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
 storage-l9              = { package = "midnight-storage", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
 transient-crypto-l9-old = { package = "midnight-transient-crypto", version = "^2.0.0", optional = true }
+ledger-l9               = { package = "midnight-ledger-v9", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", default-features = false, optional = true }
+base-crypto-l9          = { package = "midnight-base-crypto", git = "https://github.com/midnightntwrk/midnight-ledger.git", rev = "cd652d7f97b34b805bb5f0310ce7434eb883af38", optional = true }
+rand                    = { version = "0.8", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
 
 # Required by the exact-ledger9 backend, and copied from the ledger 9
 # workspace's own [patch.crates-io] (Cargo.toml at cd652d7f): ledger 9's

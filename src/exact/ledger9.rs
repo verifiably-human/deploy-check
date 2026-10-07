@@ -10,62 +10,110 @@
 //! Ledger 9 backend (midnight-ledger `ledger-9.1.0.0-rc.4`, commit
 //! cd652d7f97b34b805bb5f0310ce7434eb883af38).
 //!
-//! Ledger 9's `ContractOperation` has a `v2` slot for keys from ZKIR v2
-//! circuits (compactc's default; file tag `verifier-key[v6]`, parsed with
-//! midnight-transient-crypto 2.x), a `v3` slot for ZKIR v3 keys
-//! (`--feature-zkir-v3`; tag `verifier-key[v7]`, transient-crypto 3.x), and
-//! an optional IR. Each key goes into the slot its tag selects. IR is not
-//! attached: it is installed separately (`SingleUpdate::IrInsert`), not as
-//! part of a deploy.
+//! Builds the deploy-only transaction a wallet would submit, before fees,
+//! and asks the ledger for its cost (`Transaction::cost`). The contract state
+//! is the build's real initial state (constructor ledger data plus one
+//! operation per circuit, see `scripts/initial-state.mjs`), with each
+//! circuit's verifier key put in the slot its tag selects: ZKIR v2 keys
+//! (`verifier-key[v6]`, compactc's default) in `v2`, ZKIR v3 keys
+//! (`verifier-key[v7]`, `--feature-zkir-v3`) in `v3`. IR is not attached;
+//! it is installed separately (`SingleUpdate::IrInsert`).
+//!
+//! Costing only `tree_copy` of a state with null ledger data, as earlier
+//! versions did, undercounted by 1.6-2.1 KB on 17- and 18-circuit builds
+//! and passed a deploy the chain rejected.
 
+use super::{DeployOptions, ExactCost};
 use crate::artifacts::Artifacts;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
-use onchain_state_l9::state::{ContractOperation, ContractState, EntryPointBuf, StateValue};
-use onchain_vm_l9::cost_model::INITIAL_COST_MODEL;
+use base_crypto_l9::schnorr::SigningKey;
+use base_crypto_l9::time::Timestamp;
+use ledger_l9::structure::{
+    ContractDeploy, Intent, ProofPreimageMarker, Signature, Transaction, INITIAL_PARAMETERS,
+};
+use onchain_state_l9::state::{
+    ContractMaintenanceAuthority, ContractMaintenanceVerifyingKey, ContractState, EntryPointBuf,
+};
+use rand::rngs::OsRng;
 use serialize_l9::tagged_deserialize;
-use storage_l9::{arena::Sp, db::InMemoryDB, storage::HashMap as StorageHashMap};
+use storage_l9::db::InMemoryDB;
+use transient_crypto_l9::commitment::PedersenRandomness;
 
 const V6_TAG: &[u8] = b"midnight:verifier-key[v6]:";
 const V7_TAG: &[u8] = b"midnight:verifier-key[v7]:";
 
-pub fn tree_copy_bytes_written(artifacts: &Artifacts) -> Result<u64> {
-    let mut ops: StorageHashMap<EntryPointBuf, ContractOperation, InMemoryDB> =
-        StorageHashMap::new();
+type Tx = Transaction<Signature, ProofPreimageMarker, PedersenRandomness, InMemoryDB>;
+
+pub fn deploy_cost(
+    artifacts: &Artifacts,
+    initial_state: &[u8],
+    options: &DeployOptions,
+) -> Result<ExactCost> {
+    let mut state: ContractState<InMemoryDB> = tagged_deserialize(&mut &initial_state[..])
+        .context("deserializing the initial ContractState as ledger 9")?;
 
     for circuit in &artifacts.circuits {
+        let entry_point: EntryPointBuf = circuit.name.as_bytes().into();
+        let mut op = state
+            .operations
+            .get(&entry_point)
+            .map(|op| (*op).clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "the initial state has no operation for circuit `{}`; was it generated from this build?",
+                    circuit.name
+                )
+            })?;
         let bytes = &circuit.verifier_key_bytes[..];
-        let mut op = ContractOperation::new(None, None);
         if bytes.starts_with(V6_TAG) {
-            let vk: transient_crypto_l9_old::proofs::VerifierKey =
-                tagged_deserialize(&mut &bytes[..]).with_context(|| {
-                    format!(
-                        "deserializing ZKIR v2 verifier key for circuit `{}`",
-                        circuit.name
-                    )
-                })?;
-            op.v2 = Some(vk);
+            op.v2 = Some(tagged_deserialize(&mut &bytes[..]).with_context(|| {
+                format!("deserializing ZKIR v2 verifier key for `{}`", circuit.name)
+            })?);
         } else if bytes.starts_with(V7_TAG) {
-            let vk: transient_crypto_l9::proofs::VerifierKey = tagged_deserialize(&mut &bytes[..])
-                .with_context(|| {
-                    format!(
-                        "deserializing ZKIR v3 verifier key for circuit `{}`",
-                        circuit.name
-                    )
-                })?;
-            op.v3 = Some(vk);
+            op.v3 = Some(tagged_deserialize(&mut &bytes[..]).with_context(|| {
+                format!("deserializing ZKIR v3 verifier key for `{}`", circuit.name)
+            })?);
         } else {
             bail!(
                 "verifier key for circuit `{}` has an unrecognized tag; this backend knows verifier-key[v6] (ZKIR v2) and verifier-key[v7] (ZKIR v3)",
                 circuit.name
             );
         }
-        let entry_point: EntryPointBuf = circuit.name.as_bytes().into();
-        ops = ops.insert(entry_point, op);
+        state.operations = state.operations.insert(entry_point, op);
     }
 
-    let state: ContractState<InMemoryDB> =
-        ContractState::new(StateValue::Null, ops, Default::default());
+    if options.authority_keys > 0 {
+        let committee = (0..options.authority_keys)
+            .map(|_| {
+                ContractMaintenanceVerifyingKey::Schnorr(SigningKey::sample(OsRng).verifying_key())
+            })
+            .collect::<Vec<_>>();
+        state.maintenance_authority = ContractMaintenanceAuthority {
+            committee,
+            threshold: 1,
+            counter: 0,
+        };
+    }
 
-    Ok(INITIAL_COST_MODEL.tree_copy(Sp::new(state)).bytes_written)
+    let deploy = ContractDeploy::new(&mut OsRng, state);
+    let ttl = Timestamp::from_secs(4_000_000_000);
+    let intent = Intent::new(
+        &mut OsRng,
+        None,
+        None,
+        vec![],
+        vec![],
+        vec![deploy],
+        None,
+        ttl,
+    );
+    let tx: Tx = Transaction::from_intents("undeployed", [(1u16, intent)].into_iter().collect());
+
+    let cost = tx
+        .cost(&INITIAL_PARAMETERS, false)
+        .map_err(|e| anyhow!("ledger cost computation failed: {e:?}"))?;
+    Ok(ExactCost {
+        bytes_written: cost.bytes_written,
+    })
 }

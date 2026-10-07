@@ -14,27 +14,34 @@
 //! `ContractOperation` into a v2 slot for ZKIR v2 keys, a v3 slot for ZKIR v3
 //! keys, and an optional IR). Pick the backend at run time with `--ledger`.
 //!
-//! The deploy branch of the ledger's fee computation charges
-//! `map_index(EXPECTED_CONTRACT_DEPTH) + map_insert(EXPECTED_CONTRACT_DEPTH,
-//! false) + tree_copy(initial_state)` (ledger/src/structure.rs, the
-//! `ContractAction::Deploy` arm; identical in ledger-8.1.0 and
-//! ledger-9.1.0.0-rc.4). `map_index` is read-only. `map_insert(32, false)`
-//! writes eight 512-byte layers it also overwrites, plus one 32-byte leaf;
-//! after the `RunningCost` to `SyntheticCost` conversion nets deleted bytes
-//! out, that is +32 bytes of `bytes_written`. The backends add it.
+//! Each backend builds the deploy-only transaction a wallet would submit,
+//! before fees, from the build's real initial state, and takes its cost
+//! from the ledger's own `Transaction::cost`. The initial state (the
+//! constructor's ledger data plus one operation per circuit) can only be
+//! produced by running the compiled contract, so it comes from
+//! `scripts/initial-state.mjs` (embedded in this binary and run with `node`)
+//! or from a file passed with `--initial-state`.
+//!
+//! The fee payment a wallet adds to the transaction is not included; on a
+//! ledger 9 devnet it added 128 bytes_written.
 
 use crate::artifacts::Artifacts;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use std::path::PathBuf;
+use std::process::Command;
 
 #[cfg(feature = "exact-ledger8")]
 mod ledger8;
 #[cfg(feature = "exact-ledger9")]
 mod ledger9;
 
-/// Net `bytes_written` of `map_insert(EXPECTED_CONTRACT_DEPTH, false)`:
-/// the 32-byte leaf (`PERSISTENT_HASH_BYTES`). The 4,096 bytes of
-/// overwritten layers count as churn, not writes.
+/// Net `bytes_written` of the ledger's `map_insert(EXPECTED_CONTRACT_DEPTH,
+/// false)` for a deploy: the 32-byte leaf. Used by the estimator; exact mode
+/// gets it from the ledger.
 pub const DEPLOY_MAP_INSERT_NET_BYTES: u64 = 32;
+
+/// The helper that writes a build's initial `ContractState`.
+pub const INITIAL_STATE_SCRIPT: &str = include_str!("../../scripts/initial-state.mjs");
 
 /// Ledger major versions with an exact backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -45,7 +52,24 @@ pub enum LedgerVersion {
     V9,
 }
 
+/// How the deploy is assumed to be built.
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    not(any(feature = "exact-ledger8", feature = "exact-ledger9")),
+    allow(dead_code)
+)]
+pub struct DeployOptions {
+    /// Serialized initial `ContractState`; generated with `node` when absent.
+    pub initial_state: Option<PathBuf>,
+    /// Constructor arguments for the generator, as a JSON array.
+    pub ctor_args: String,
+    /// Maintenance-authority committee size. Midnight.js `deployContract`
+    /// installs one key unless told otherwise; 0 deploys with none.
+    pub authority_keys: usize,
+}
+
 /// Backends compiled into this binary.
+#[allow(clippy::vec_init_then_push)]
 pub fn available() -> Vec<LedgerVersion> {
     #[allow(unused_mut)]
     let mut v = Vec::new();
@@ -56,8 +80,7 @@ pub fn available() -> Vec<LedgerVersion> {
     v
 }
 
-/// Exact deploy `bytes_written`: `tree_copy(initial_state)` plus the
-/// operations-map insertion.
+/// Exact deploy `bytes_written`, before the wallet's fee payment.
 #[derive(Debug, Clone, Copy)]
 pub struct ExactCost {
     pub bytes_written: u64,
@@ -66,11 +89,12 @@ pub struct ExactCost {
 pub fn compute(
     artifacts: &Artifacts,
     requested: Option<LedgerVersion>,
+    options: &DeployOptions,
 ) -> Result<(LedgerVersion, ExactCost)> {
     let avail = available();
     let version = match (requested, avail.as_slice()) {
         (_, []) => bail!(
-            "--exact needs a ledger backend. Rebuild with `--features exact-ledger8` (alias `exact`) or `--features exact-ledger9`, e.g.\n  cargo install --git https://github.com/verifiably-human/deploy-check --features exact-ledger8"
+            "--exact needs a ledger backend. Rebuild with `--features exact-ledger8` (alias `exact`) or `--features exact-ledger9`, e.g.\n  cargo install --git https://github.com/verifiably-human/deploy-check --features exact-ledger9"
         ),
         (Some(v), _) if avail.contains(&v) => v,
         (Some(v), _) => bail!("--ledger {v:?} was not compiled in; this binary has {avail:?}"),
@@ -79,28 +103,62 @@ pub fn compute(
             "this binary has several ledger backends ({avail:?}); choose one with --ledger"
         ),
     };
-    let tree_copy = tree_copy_for(version, artifacts)?;
+    let initial_state = load_initial_state(artifacts, options)?;
     Ok((
         version,
-        ExactCost {
-            bytes_written: tree_copy + DEPLOY_MAP_INSERT_NET_BYTES,
-        },
+        cost_for(version, artifacts, &initial_state, options)?,
     ))
 }
 
+/// Read `--initial-state`, or run the embedded generator with `node`.
+fn load_initial_state(artifacts: &Artifacts, options: &DeployOptions) -> Result<Vec<u8>> {
+    if let Some(path) = &options.initial_state {
+        return std::fs::read(path).with_context(|| format!("reading {}", path.display()));
+    }
+    let dir = tempfile::tempdir().context("creating a temporary directory")?;
+    let script = dir.path().join("initial-state.mjs");
+    let out = dir.path().join("initial-state.bin");
+    std::fs::write(&script, INITIAL_STATE_SCRIPT).context("writing the generator script")?;
+    let status = Command::new("node")
+        .arg(&script)
+        .arg(&artifacts.build_dir)
+        .arg(&out)
+        .arg(&options.ctor_args)
+        .status()
+        .context(
+            "running `node` to generate the initial contract state (exact mode needs Node.js, or pass --initial-state)",
+        )?;
+    if !status.success() {
+        bail!(
+            "generating the initial contract state failed ({status}); see the message above, or pass --initial-state"
+        );
+    }
+    std::fs::read(&out).context("reading the generated initial state")
+}
+
 #[cfg(any(feature = "exact-ledger8", feature = "exact-ledger9"))]
-fn tree_copy_for(version: LedgerVersion, artifacts: &Artifacts) -> Result<u64> {
+fn cost_for(
+    version: LedgerVersion,
+    artifacts: &Artifacts,
+    initial_state: &[u8],
+    options: &DeployOptions,
+) -> Result<ExactCost> {
     match version {
         #[cfg(feature = "exact-ledger8")]
-        LedgerVersion::V8 => ledger8::tree_copy_bytes_written(artifacts),
+        LedgerVersion::V8 => ledger8::deploy_cost(artifacts, initial_state, options),
         #[cfg(feature = "exact-ledger9")]
-        LedgerVersion::V9 => ledger9::tree_copy_bytes_written(artifacts),
+        LedgerVersion::V9 => ledger9::deploy_cost(artifacts, initial_state, options),
         #[allow(unreachable_patterns)]
         other => bail!("ledger {other:?} backend not compiled in"),
     }
 }
 
 #[cfg(not(any(feature = "exact-ledger8", feature = "exact-ledger9")))]
-fn tree_copy_for(_version: LedgerVersion, _artifacts: &Artifacts) -> Result<u64> {
+fn cost_for(
+    _version: LedgerVersion,
+    _artifacts: &Artifacts,
+    _initial_state: &[u8],
+    _options: &DeployOptions,
+) -> Result<ExactCost> {
     unreachable!("compute() bails before this when no backend is compiled in")
 }

@@ -15,24 +15,51 @@
 
 //! Ledger 8 backend (midnight-ledger `ledger-8.1.0`).
 //!
-//! Builds the `ContractState` a deploy would commit from the build
-//! directory's verifier keys and charges it with `tree_copy`, mirroring the
-//! `ContractAction::Deploy` cost branch in `ledger/src/structure.rs`.
+//! Builds the deploy-only transaction a wallet would submit, before fees,
+//! from the build's real initial state (constructor ledger data plus one
+//! operation per circuit, see `scripts/initial-state.mjs`) with each
+//! circuit's verifier key added, and asks the ledger for its cost
+//! (`Transaction::cost`). Ledger 8 has one verifier-key slot per operation.
 
+use super::{DeployOptions, ExactCost};
 use crate::artifacts::Artifacts;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
-use midnight_onchain_state::state::{ContractOperation, ContractState, EntryPointBuf, StateValue};
-use midnight_onchain_vm::cost_model::INITIAL_COST_MODEL;
+use midnight_base_crypto::schnorr::Signature;
+use midnight_base_crypto::schnorr::SigningKey;
+use midnight_base_crypto::time::Timestamp;
+use midnight_ledger::structure::{
+    ContractDeploy, Intent, ProofPreimageMarker, Transaction, INITIAL_PARAMETERS,
+};
+use midnight_onchain_state::state::{ContractMaintenanceAuthority, ContractState, EntryPointBuf};
 use midnight_serialize::tagged_deserialize;
-use midnight_storage::{arena::Sp, db::InMemoryDB, storage::HashMap as StorageHashMap};
+use midnight_storage::db::InMemoryDB;
+use midnight_transient_crypto::commitment::PedersenRandomness;
 use midnight_transient_crypto::proofs::VerifierKey;
+use rand::rngs::OsRng;
 
-pub fn tree_copy_bytes_written(artifacts: &Artifacts) -> Result<u64> {
-    let mut ops: StorageHashMap<EntryPointBuf, ContractOperation, InMemoryDB> =
-        StorageHashMap::new();
+type Tx = Transaction<Signature, ProofPreimageMarker, PedersenRandomness, InMemoryDB>;
+
+pub fn deploy_cost(
+    artifacts: &Artifacts,
+    initial_state: &[u8],
+    options: &DeployOptions,
+) -> Result<ExactCost> {
+    let mut state: ContractState<InMemoryDB> = tagged_deserialize(&mut &initial_state[..])
+        .context("deserializing the initial ContractState as ledger 8")?;
 
     for circuit in &artifacts.circuits {
+        let entry_point: EntryPointBuf = circuit.name.as_bytes().into();
+        let mut op = state
+            .operations
+            .get(&entry_point)
+            .map(|op| (*op).clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "the initial state has no operation for circuit `{}`; was it generated from this build?",
+                    circuit.name
+                )
+            })?;
         let vk: VerifierKey = tagged_deserialize(&mut &circuit.verifier_key_bytes[..])
             .with_context(|| {
                 format!(
@@ -40,13 +67,39 @@ pub fn tree_copy_bytes_written(artifacts: &Artifacts) -> Result<u64> {
                     circuit.name
                 )
             })?;
-        let op = ContractOperation::new(Some(vk));
-        let entry_point: EntryPointBuf = circuit.name.as_bytes().into();
-        ops = ops.insert(entry_point, op);
+        op.v2 = Some(vk);
+        state.operations = state.operations.insert(entry_point, op);
     }
 
-    let state: ContractState<InMemoryDB> =
-        ContractState::new(StateValue::Null, ops, Default::default());
+    if options.authority_keys > 0 {
+        let committee = (0..options.authority_keys)
+            .map(|_| SigningKey::sample(OsRng).verifying_key())
+            .collect::<Vec<_>>();
+        state.maintenance_authority = ContractMaintenanceAuthority {
+            committee,
+            threshold: 1,
+            counter: 0,
+        };
+    }
 
-    Ok(INITIAL_COST_MODEL.tree_copy(Sp::new(state)).bytes_written)
+    let deploy = ContractDeploy::new(&mut OsRng, state);
+    let ttl = Timestamp::from_secs(4_000_000_000);
+    let intent = Intent::new(
+        &mut OsRng,
+        None,
+        None,
+        vec![],
+        vec![],
+        vec![deploy],
+        None,
+        ttl,
+    );
+    let tx: Tx = Transaction::from_intents("undeployed", [(1u16, intent)].into_iter().collect());
+
+    let cost = tx
+        .cost(&INITIAL_PARAMETERS, false)
+        .map_err(|e| anyhow!("ledger cost computation failed: {e:?}"))?;
+    Ok(ExactCost {
+        bytes_written: cost.bytes_written,
+    })
 }

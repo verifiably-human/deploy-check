@@ -84,6 +84,27 @@ struct Cli {
     /// Ledger backend for --exact when more than one is compiled in.
     #[arg(long, value_name = "VERSION")]
     ledger: Option<exact::LedgerVersion>,
+
+    /// Serialized initial ContractState for --exact (the
+    /// `initialState(...).currentContractState.serialize()` bytes). Without
+    /// it, deploy-check runs its embedded generator with `node`.
+    #[arg(long, value_name = "FILE")]
+    initial_state: Option<PathBuf>,
+
+    /// Constructor arguments for the generator, as a JSON array. Numbers
+    /// become Field/Uint values; "0x..." strings become Bytes.
+    #[arg(long, value_name = "JSON", default_value = "[]")]
+    ctor_args: String,
+
+    /// Maintenance-authority committee size assumed for --exact.
+    /// Midnight.js deployContract installs one key; 0 means none.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    authority_keys: usize,
+
+    /// bytes_written added to --exact for the wallet's fee payment, which is
+    /// part of the submitted transaction. 128 is a DUST spend on ledger 9.
+    #[arg(long, value_name = "BYTES", default_value_t = 128)]
+    fee_allowance: u64,
 }
 
 fn main() -> Result<()> {
@@ -123,9 +144,14 @@ fn main() -> Result<()> {
         .with_context(|| format!("reading build dir {}", build_dir.display()))?;
 
     let exact_bytes_written = if cli.exact {
-        let (_version, cost) =
-            exact::compute(&artifacts, cli.ledger).context("computing exact bytes_written")?;
-        Some(cost.bytes_written)
+        let options = exact::DeployOptions {
+            initial_state: cli.initial_state.clone(),
+            ctor_args: cli.ctor_args.clone(),
+            authority_keys: cli.authority_keys,
+        };
+        let (_version, cost) = exact::compute(&artifacts, cli.ledger, &options)
+            .context("computing exact bytes_written")?;
+        Some(cost.bytes_written + cli.fee_allowance)
     } else {
         None
     };

@@ -1,0 +1,40 @@
+{
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "circuits": [
+    {
+      "name": "set1",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+        {
+          "name": "v",
+          "type": {
+            "type-name": "Field"
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    }
+  ],
+  "witnesses": [
+  ],
+  "contracts": [
+  ],
+  "ledger": [
+    {
+      "name": "f1",
+      "index": 0,
+      "exported": true,
+      "storage": "Cell",
+      "type": {
+        "type-name": "Field"
+      }
+    }
+  ]
+}

@@ -286,3 +286,57 @@ fn mainnet_preset_skips_metadata_cap_it_does_not_set() {
         .success()
         .stdout(contains("[SKIP] per-entry-point cap"));
 }
+
+// Exact mode against the ledger's own `Transaction::cost`. Each fixture is a
+// one-circuit build (contract-info.json, the verifier key) plus its initial
+// ContractState from scripts/initial-state.mjs. The expected figures are what
+// the ledger's JS bindings report for the same deploy-only transaction:
+// ledger-v9 1.0.0-rc.5 for the ledger 9 build (compactc 0.34.0), and
+// ledger-v8 8.1.0 for the ledger 8 build (compactc 0.31.1). On a ledger 9
+// devnet the chain charged exactly these figures plus 128 bytes of fee spend.
+#[cfg(any(feature = "exact-ledger8", feature = "exact-ledger9"))]
+fn exact_bytes(fixture: &str, ledger: &str, extra: &[&str]) -> u64 {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
+    let out = bin()
+        .arg(&dir)
+        .args(["--exact", "--ledger", ledger, "--json", "--initial-state"])
+        .arg(dir.join("initial-state.bin"))
+        .args(extra)
+        .output()
+        .expect("run deploy-check");
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json report");
+    parsed["totals"]["exact_bytes_written"]
+        .as_u64()
+        .expect("exact figure")
+}
+
+#[test]
+#[cfg(feature = "exact-ledger9")]
+fn exact_ledger9_matches_ledger_transaction_cost() {
+    let no_extras = ["--authority-keys", "0", "--fee-allowance", "0"];
+    assert_eq!(exact_bytes("l9-n1", "9", &no_extras), 2014);
+}
+
+#[test]
+#[cfg(feature = "exact-ledger9")]
+fn exact_ledger9_adds_fee_allowance_and_authority() {
+    let base = exact_bytes(
+        "l9-n1",
+        "9",
+        &["--authority-keys", "0", "--fee-allowance", "0"],
+    );
+    assert_eq!(
+        exact_bytes("l9-n1", "9", &["--authority-keys", "0"]),
+        base + 128
+    );
+    assert!(exact_bytes("l9-n1", "9", &["--fee-allowance", "0"]) > base);
+}
+
+#[test]
+#[cfg(feature = "exact-ledger8")]
+fn exact_ledger8_matches_ledger_transaction_cost() {
+    let no_extras = ["--authority-keys", "0", "--fee-allowance", "0"];
+    assert_eq!(exact_bytes("l8-n1", "8", &no_extras), 2012);
+}

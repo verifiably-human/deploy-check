@@ -67,6 +67,8 @@ Exact builds link the ledger crates and take several minutes from a cold cache. 
 deploy-check <build-dir>                          # estimator, mainnet preset
 deploy-check <build-dir> --exact                  # exact bytes_written from the linked ledger
 deploy-check <build-dir> --exact --ledger 9       # pick a backend when several are compiled in
+deploy-check <build-dir> --exact --ctor-args '[42, "0xabcd"]'   # constructor arguments
+deploy-check <build-dir> --exact --initial-state state.bin       # initial state you serialized yourself
 deploy-check <build-dir> --network preprod        # another preset
 deploy-check <build-dir> --limits-file ledger-parameters-config.json
 deploy-check <build-dir> --bytes-written 35143    # check a figure you already have
@@ -75,7 +77,7 @@ deploy-check --list-networks
 
 `<build-dir>` is the directory `compact compile` produced. It must contain `compiler/contract-info.json` and `keys/<circuit>.verifier` for every circuit, so compile without `--skip-zk`.
 
-Other flags: `--json` emits a JSON report.
+Other flags: `--json` emits a JSON report. For `--exact`: `--authority-keys <n>` sets the maintenance-authority committee size (default 1, what Midnight.js `deployContract` installs; 0 for none), and `--fee-allowance <bytes>` adds the wallet's fee payment (default 128, a DUST spend on ledger 9).
 
 `--bytes-written` checks a `bytes_written` you obtained elsewhere, for example from the ledger's `Transaction.cost()` or a chain explorer. It takes precedence over exact and estimated values.
 
@@ -101,17 +103,34 @@ Result: DOES NOT FIT
 
 ### Estimator (default)
 
-Sums the verifier-key file sizes and adds constants for storage-tree overhead. The constants are sized to overshoot, so an estimator PASS implies an exact PASS. On a five-circuit test contract the estimator said 10,091 bytes against an exact 9,251 (ledger 8) and 9,261 (ledger 9).
+Adds up the verifier-key file sizes, a per-circuit allowance for the operations-map entry, a per-ledger-field allowance for initial data (from `contract-info.json`), fixed overheads and the fee payment. It needs nothing but the build directory.
+
+It is calibrated to stay above the real charge: on Compact 0.34 builds of 1 to 18 circuits it read 12% to 47% high (36,662 bytes for an 18-circuit build the chain charged 33,068). It cannot see what a constructor writes, so a constructor that fills collections or large values can exceed it. Near the ceiling, use `--exact`.
 
 ### Exact (`--features exact-ledger8` / `exact-ledger9`)
 
-Builds the `ContractState` the deploy would commit from the build directory's verifier keys and charges it the way the ledger's `ContractAction::Deploy` cost branch does: `tree_copy(initial_state)` plus the operations-map insert, which nets 32 bytes of `bytes_written`. This charge is identical in ledger-8.1.0 and ledger-9.1.0.0-rc.4.
+Builds the deploy-only transaction a wallet would submit and asks the ledger for its cost (`Transaction::cost`), then adds the fee allowance. The contract state is the build's real initial state, meaning the constructor's ledger data plus one operation per circuit, with each circuit's verifier key added.
+
+That initial state can only be produced by running the compiled contract. deploy-check runs `scripts/initial-state.mjs` (embedded in the binary) with `node`, which resolves `@midnight-ntwrk/compact-runtime` from the build's own project so its version matches the build. Pass constructor arguments with `--ctor-args`. If the constructor calls witnesses, or Node isn't available, serialize `initialState(...).currentContractState` yourself and pass it with `--initial-state`.
 
 Each ledger version has its own backend because the crates change shape between majors. Ledger 9's `ContractOperation` has separate slots for ZKIR v2 keys (`verifier-key[v6]`, compactc's default output) and ZKIR v3 keys (`verifier-key[v7]`, from `--feature-zkir-v3`). The ledger 9 backend puts each key in the slot its tag selects. The ledger 8 backend accepts only v6 keys, since ZKIR v3 does not exist on ledger 8.
 
+### Checked against a chain
+
+On a devnet running node 2.1.0-beta.1 (ledger 9.1.0.0-rc.4), with no maintenance authority, as deployed:
+
+| Build | Exact (with fee allowance) | Charged on chain | Chain's result | deploy-check |
+|---|---:|---:|---|---|
+| 17 circuits, 145-byte constructor argument | 31,971 | 31,971 | accepted | FITS |
+| 17 circuits, 160-byte constructor argument | 32,037 | 32,037 | rejected | DOES NOT FIT |
+| 18 circuits | 33,068 | 33,068 | rejected | DOES NOT FIT |
+
+Without the fee allowance, exact mode equals the figure the ledger's own JavaScript bindings report for the same transaction: `ledger-v9` for ledger 9 builds and `ledger-v8` 8.1.0 for ledger 8 builds. The test suite checks both.
+
+Earlier versions costed only the operations, with no initial ledger data. They undercounted by 1.6 to 2.1 KB on 17- and 18-circuit builds, and passed the 18-circuit deploy the chain rejected.
+
 ### What exact mode does not include
 
-- Writes made by the rest of the deploy transaction, such as fee payment. On chain, the charged figure is somewhat higher than the contract's own cost. If you have the chain's figure, pass it with `--bytes-written`.
 - Contract IR. Ledger 9 can store IR per entry point, but it is installed with a separate `IrInsert` maintenance update, not by the deploy.
 - Read and compute time. A deploy runs no proof and little VM code, so `bytes_written`, or for very large transactions `block_usage`, is what binds.
 

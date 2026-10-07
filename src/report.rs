@@ -51,9 +51,10 @@ pub struct Totals {
     /// Estimated bytes_written for the deploy, including tree pointer
     /// overhead. See `report::estimate_bytes_written`. Always present.
     pub estimated_bytes_written: u64,
-    /// Exact `bytes_written` from `cost_model.tree_copy` over the real
-    /// `ContractState`. Present only when run with `--exact` (and the
-    /// binary was built with `--features exact`).
+    /// Exact `bytes_written` from the ledger's `Transaction::cost` of the
+    /// deploy-only transaction built from the real initial state, plus the
+    /// fee allowance. Present only when run with `--exact` (and the binary
+    /// was built with an `exact-ledger*` feature).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_bytes_written: Option<u64>,
     /// Caller-supplied `bytes_written` (`--bytes-written`), e.g. a figure
@@ -199,14 +200,18 @@ impl Report {
 /// Per-child pointer overhead in the on-chain storage tree.
 /// Matches `PERSISTENT_HASH_BYTES` (32) in midnight-ledger.
 const PERSISTENT_HASH_BYTES: u64 = 32;
-/// Per-entry-point wrapper overhead (name + ContractOperation framing).
-/// Rough; the ledger crate gives an exact figure, but for this MVP we
-/// use the doc's rule-of-thumb upper bound.
-const ENTRY_POINT_OVERHEAD: u64 = 200;
-/// Wrapping ContractState overhead (operations-map root, balance map,
-/// maintenance authority commitments, initial state ADT root).
-/// Rough constant; refine when wiring the ledger crate.
+/// Per-circuit overhead beyond the verifier key: the operations-map entry,
+/// its name and `ContractOperation` framing.
+const ENTRY_POINT_OVERHEAD: u64 = 300;
+/// Allowance per ledger field for the constructor's initial data (a
+/// default-initialized cell or an empty collection, with its tree pointers).
+const LEDGER_FIELD_OVERHEAD: u64 = 256;
+/// Fixed overhead: the `ContractState` wrapper, the deploy action and its
+/// intent, and a one-key maintenance authority.
 const CONTRACT_STATE_OVERHEAD: u64 = 1024;
+/// The wallet's fee payment, which is part of the submitted transaction
+/// (a DUST spend measured on a ledger 9 devnet).
+const FEE_PAYMENT_BYTES: u64 = 128;
 /// Wrapping transaction overhead (Intent, balance commitments,
 /// zswap offers, signatures). Rough; refine.
 const TRANSACTION_OVERHEAD: u64 = 4096;
@@ -229,7 +234,9 @@ pub fn evaluate(
     let vk_sum: u64 = circuits.iter().map(|c| c.verifier_key_bytes).sum();
     let circuit_count = circuits.len();
 
-    let estimated_bytes_written = estimate_bytes_written(circuit_count as u64, vk_sum);
+    let ledger_fields = artifacts.contract_info.ledger.len() as u64;
+    let estimated_bytes_written =
+        estimate_bytes_written(circuit_count as u64, vk_sum, ledger_fields);
     let estimated_tx_bytes = estimated_bytes_written + TRANSACTION_OVERHEAD;
     let max_ep_bytes = circuits
         .iter()
@@ -243,7 +250,7 @@ pub fn evaluate(
             (Some(b), _) => (b, "supplied with --bytes-written".to_string()),
             (None, Some(b)) => (
                 b,
-                "exact: ledger tree_copy of the initial state + operations-map insert".to_string(),
+                "exact: ledger Transaction::cost of the deploy, plus the fee allowance".to_string(),
             ),
             (None, None) => (
                 estimated_bytes_written,
@@ -341,18 +348,27 @@ fn weight_check(limits: &Limits, bytes_written: u64, tx_bytes: u64) -> WeightChe
     }
 }
 
-/// MVP estimator. Mirrors `tree_copy` accounting from `cost_model.rs`:
-/// bytes_written = sum(node.data.len + child_count * PERSISTENT_HASH_BYTES).
-/// We model: per circuit, one operations-map entry with a child pointer
-/// plus the VK bytes. Plus the ContractState wrapper.
-fn estimate_bytes_written(circuit_count: u64, vk_sum: u64) -> u64 {
+/// Estimator. Mirrors `tree_copy` accounting from `cost_model.rs`
+/// (bytes_written = sum(node.data.len + child_count * PERSISTENT_HASH_BYTES)):
+/// per circuit, an operations-map entry with child pointers plus the
+/// verifier key; per ledger field, an allowance for its initial value; plus
+/// fixed overheads and the fee payment.
+///
+/// Calibrated to stay above the ledger's figure on Compact 0.34 builds of
+/// 1 to 18 circuits with one Field cell each, which the chain charged
+/// 2,142 to 33,068 bytes. It cannot see what a constructor writes: a
+/// constructor that fills collections or large values can exceed it, so
+/// near the ceiling use --exact.
+fn estimate_bytes_written(circuit_count: u64, vk_sum: u64, ledger_fields: u64) -> u64 {
     let map_node_overhead = circuit_count * PERSISTENT_HASH_BYTES * 2;
     let per_entry_wrapper = circuit_count * ENTRY_POINT_OVERHEAD;
     vk_sum
         + map_node_overhead
         + per_entry_wrapper
+        + ledger_fields * LEDGER_FIELD_OVERHEAD
         + CONTRACT_STATE_OVERHEAD
         + crate::exact::DEPLOY_MAP_INSERT_NET_BYTES
+        + FEE_PAYMENT_BYTES
 }
 
 fn check(what: &str, used: u64, limit: u64) -> CheckResult {

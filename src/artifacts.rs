@@ -46,6 +46,10 @@ pub struct ContractInfo {
     pub circuits: Vec<CircuitDecl>,
     pub witnesses: Vec<serde_json::Value>,
     pub contracts: Vec<String>,
+    /// Ledger fields (`export ledger ...`), as listed by compactc. Absent in
+    /// older compilers' output.
+    #[serde(default)]
+    pub ledger: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
